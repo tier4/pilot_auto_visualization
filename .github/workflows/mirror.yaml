@@ -1,0 +1,145 @@
+name: mirror
+
+on:
+  schedule:
+    - cron: 0,30 * * * *
+  pull_request:
+    paths:
+      - .sync/sources.yaml
+      - tools/**
+      - .github/workflows/mirror.yaml
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build the branches but do not push them
+        type: boolean
+        default: false
+
+concurrency:
+  group: mirror-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Pinned: git-filter-repo is deterministic for a given version, but a
+  # different version may rewrite differently and would republish every branch.
+  FILTER_REPO_VERSION: 2.47.0
+  DOWNSTREAM: https://github.com/${{ github.repository }}.git
+  # A pull request builds everything and pushes nothing, so the pipeline can be
+  # exercised before it is merged.
+  DRY_RUN: ${{ github.event_name == 'pull_request' || inputs.dry_run == true }}
+
+jobs:
+  plan:
+    # The matrices below come from .sync/sources.yaml, so adding a mirror is a
+    # configuration change and never a workflow change.
+    runs-on: ubuntu-24.04
+    outputs:
+      sources: ${{ steps.plan.outputs.sources }}
+      combined: ${{ steps.plan.outputs.combined }}
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: python3 -m pip install --disable-pip-version-check pyyaml
+        shell: bash
+
+      - name: Read the mirror configuration
+        id: plan
+        run: |
+          tools/sync_config.py validate
+          echo "sources=$(tools/mirror.py list-sources)" >>"$GITHUB_OUTPUT"
+          echo "combined=$(tools/mirror.py list-combined)" >>"$GITHUB_OUTPUT"
+        shell: bash
+
+  mirror:
+    needs: plan
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        source: ${{ fromJson(needs.plan.outputs.sources) }}
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --disable-pip-version-check \
+            pyyaml "git-filter-repo==${FILTER_REPO_VERSION}"
+        shell: bash
+
+      - name: Generate token
+        id: generate-token
+        if: env.DRY_RUN != 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
+      - name: Set git config
+        if: env.DRY_RUN != 'true'
+        uses: autowarefoundation/autoware-github-actions/set-git-config@v1
+        with:
+          token: ${{ steps.generate-token.outputs.token }}
+
+      - name: Filter and publish the mirror branch
+        run: |
+          if [ "${DRY_RUN}" = true ]; then
+              tools/mirror.py mirror "${SOURCE}" --work "${RUNNER_TEMP}/mirror" \
+                  --downstream "${DOWNSTREAM}"
+          else
+              tools/mirror.py mirror "${SOURCE}" --work "${RUNNER_TEMP}/mirror" \
+                  --downstream "${DOWNSTREAM}" --push
+          fi
+        env:
+          SOURCE: ${{ matrix.source }}
+        shell: bash
+
+  combine:
+    # Reads the mirror branches that the previous job published, so the
+    # combined branch can never disagree with the per-source mirrors. On a dry
+    # run those branches may not exist yet, in which case the target is skipped.
+    needs: [plan, mirror]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.plan.outputs.combined) }}
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: python3 -m pip install --disable-pip-version-check pyyaml
+        shell: bash
+
+      - name: Generate token
+        id: generate-token
+        if: env.DRY_RUN != 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
+      - name: Set git config
+        if: env.DRY_RUN != 'true'
+        uses: autowarefoundation/autoware-github-actions/set-git-config@v1
+        with:
+          token: ${{ steps.generate-token.outputs.token }}
+
+      - name: Replay into the combined branch
+        # --verify checks the tip tree against the current member tips, and that
+        # appending from the same published tip is reproducible.
+        run: |
+          if [ "${DRY_RUN}" = true ]; then
+              tools/mirror.py combine "${TARGET}" --work "${RUNNER_TEMP}/combine" \
+                  --downstream "${DOWNSTREAM}" --verify --allow-missing-members
+          else
+              tools/mirror.py combine "${TARGET}" --work "${RUNNER_TEMP}/combine" \
+                  --downstream "${DOWNSTREAM}" --verify --push
+          fi
+        env:
+          TARGET: ${{ matrix.target }}
+        shell: bash
