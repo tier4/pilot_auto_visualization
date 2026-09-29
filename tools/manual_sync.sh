@@ -15,8 +15,8 @@ export PYTHONPATH="$ROOT/tools${PYTHONPATH:+:$PYTHONPATH}"
 echo "==> validate"
 tools/sync_config.py validate
 
-mapfile -t SOURCES < <(tools/mirror.py list-sources | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)))')
-mapfile -t COMBINED < <(tools/mirror.py list-combined | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)))')
+mapfile -t SOURCES < <(tools/mirror.py list-sources | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)), end="")')
+mapfile -t COMBINED < <(tools/mirror.py list-combined | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)), end="")')
 
 push_flag=()
 if [[ "$PUSH" == "1" ]]; then

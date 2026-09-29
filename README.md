@@ -68,3 +68,36 @@ tools/sync_config.py show autoware_universe  # the git-filter-repo call it impli
 ```
 
 Without `--push`, `tools/mirror.py mirror` and `tools/mirror.py combine` are dry runs.
+
+### Manual sync
+
+Publishing is **fast-forward only** (never `--force`). This is the local
+equivalent of `.github/workflows/mirror.yaml`.
+
+```bash
+git checkout ci && git pull origin ci
+python3 -m pip install pyyaml 'git-filter-repo==2.47.0'
+
+PUSH=0 ./tools/manual_sync.sh   # dry run (build only)
+PUSH=1 ./tools/manual_sync.sh   # push to origin
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PUSH` | `1` | Set `0` for a dry run |
+| `DOWNSTREAM` | `git@github.com:tier4/pilot_auto_visualization.git` | Git remote to push |
+| `WORK` | `/tmp/pilot_auto_visualization-sync` | Scratch directory for clones |
+
+To refresh one source only:
+
+```bash
+export PYTHONPATH="$PWD/tools${PYTHONPATH:+:$PYTHONPATH}"
+tools/mirror.py mirror SOURCE \
+  --work "/tmp/pilot_auto_visualization-sync/mirror" \
+  --downstream "git@github.com:tier4/pilot_auto_visualization.git" \
+  --push
+```
+
+Replace `SOURCE` with a name from `tools/mirror.py list-sources`.
+For a combined target, use `tools/mirror.py combine TARGET ... --verify --push`
+after its member mirrors are published.
